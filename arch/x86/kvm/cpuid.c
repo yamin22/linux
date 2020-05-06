@@ -1054,6 +1054,20 @@ bool kvm_cpuid(struct kvm_vcpu *vcpu, u32 *eax, u32 *ebx,
 }
 EXPORT_SYMBOL_GPL(kvm_cpuid);
 
+atomic_t total_num_exits;
+EXPORT_SYMBOL(total_num_exits);
+
+atomic_t exits_per_reason[69]={0};
+EXPORT_SYMBOL(exits_per_reason);
+
+atomic64_t time_spent_per_exit[69]={0};
+EXPORT_SYMBOL(time_spent_per_exit);
+
+atomic64_t total_time;
+EXPORT_SYMBOL(total_time);
+
+
+
 int kvm_emulate_cpuid(struct kvm_vcpu *vcpu)
 {
 	u32 eax, ebx, ecx, edx;
@@ -1063,7 +1077,37 @@ int kvm_emulate_cpuid(struct kvm_vcpu *vcpu)
 
 	eax = kvm_rax_read(vcpu);
 	ecx = kvm_rcx_read(vcpu);
-	kvm_cpuid(vcpu, &eax, &ebx, &ecx, &edx, true);
+	
+	// chnaged code to report the number of exits - Start
+	if (eax == 0x4fffffff){
+		eax = atomic_read(&total_num_exits);
+		printk("Total Exits:  %d\n", eax);
+	}
+	else if(eax  ==  0x4ffffffd){
+		if(ecx >= 0 && ecx < 69){
+			eax = atomic_read(&exits_per_reason[ecx]);
+		}	
+	}
+	else if(eax  ==  0x4ffffffe){
+		ebx = (atomic64_read(&total_time)) >> 32;
+		ecx = (atomic64_read(&total_time) & 0xffffffff);
+	}
+	else if(eax  ==  0x4ffffffc){
+		if(ecx >= 0 && ecx < 69){
+			uint64_t temp;
+			temp = atomic64_read(&(time_spent_per_exit[(int)ecx]));
+			ebx = temp >> 32;
+			ecx = temp & 0xffffffff;
+
+		}	
+	}
+	else {
+		kvm_cpuid(vcpu, &eax, &ebx, &ecx, &edx, true);	
+	}
+	
+	// Changed code to report the number of exits - End
+	
+	//kvm_cpuid(vcpu, &eax, &ebx, &ecx, &edx, true);
 	kvm_rax_write(vcpu, eax);
 	kvm_rbx_write(vcpu, ebx);
 	kvm_rcx_write(vcpu, ecx);
@@ -1071,3 +1115,17 @@ int kvm_emulate_cpuid(struct kvm_vcpu *vcpu)
 	return kvm_skip_emulated_instruction(vcpu);
 }
 EXPORT_SYMBOL_GPL(kvm_emulate_cpuid);
+
+
+
+// code to report the number of exits per reason
+
+
+/*void report_exit_reason(u32 exit_reason){
+
+	if(exit_reason >= 0 && exit_reason <=7){
+		total_num_exits++;
+		exits_per_reason[(int)exit_reason]++;
+	}
+}*/
+

@@ -1,0 +1,151 @@
+diff --git a/arch/x86/kvm/cpuid.c b/arch/x86/kvm/cpuid.c
+index b1c469446b07..a9c1c7c5f3c2 100644
+--- a/arch/x86/kvm/cpuid.c
++++ b/arch/x86/kvm/cpuid.c
+@@ -1054,6 +1054,20 @@ bool kvm_cpuid(struct kvm_vcpu *vcpu, u32 *eax, u32 *ebx,
+ }
+ EXPORT_SYMBOL_GPL(kvm_cpuid);
+ 
++atomic_t total_num_exits;
++EXPORT_SYMBOL(total_num_exits);
++
++atomic_t exits_per_reason[69]={0};
++EXPORT_SYMBOL(exits_per_reason);
++
++atomic64_t time_spent_per_exit[69]={0};
++EXPORT_SYMBOL(time_spent_per_exit);
++
++atomic64_t total_time;
++EXPORT_SYMBOL(total_time);
++
++
++
+ int kvm_emulate_cpuid(struct kvm_vcpu *vcpu)
+ {
+ 	u32 eax, ebx, ecx, edx;
+@@ -1063,7 +1077,37 @@ int kvm_emulate_cpuid(struct kvm_vcpu *vcpu)
+ 
+ 	eax = kvm_rax_read(vcpu);
+ 	ecx = kvm_rcx_read(vcpu);
+-	kvm_cpuid(vcpu, &eax, &ebx, &ecx, &edx, true);
++	
++	// chnaged code to report the number of exits - Start
++	if (eax == 0x4fffffff){
++		eax = atomic_read(&total_num_exits);
++		printk("Total Exits:  %d\n", eax);
++	}
++	else if(eax  ==  0x4ffffffd){
++		if(ecx >= 0 && ecx < 69){
++			eax = atomic_read(&exits_per_reason[ecx]);
++		}	
++	}
++	else if(eax  ==  0x4ffffffe){
++		ebx = (atomic64_read(&total_time)) >> 32;
++		ecx = (atomic64_read(&total_time) & 0xffffffff);
++	}
++	else if(eax  ==  0x4ffffffc){
++		if(ecx >= 0 && ecx < 69){
++			uint64_t temp;
++			temp = atomic64_read(&(time_spent_per_exit[(int)ecx]));
++			ebx = temp >> 32;
++			ecx = temp & 0xffffffff;
++
++		}	
++	}
++	else {
++		kvm_cpuid(vcpu, &eax, &ebx, &ecx, &edx, true);	
++	}
++	
++	// Changed code to report the number of exits - End
++	
++	//kvm_cpuid(vcpu, &eax, &ebx, &ecx, &edx, true);
+ 	kvm_rax_write(vcpu, eax);
+ 	kvm_rbx_write(vcpu, ebx);
+ 	kvm_rcx_write(vcpu, ecx);
+@@ -1071,3 +1115,17 @@ int kvm_emulate_cpuid(struct kvm_vcpu *vcpu)
+ 	return kvm_skip_emulated_instruction(vcpu);
+ }
+ EXPORT_SYMBOL_GPL(kvm_emulate_cpuid);
++
++
++
++// code to report the number of exits per reason
++
++
++/*void report_exit_reason(u32 exit_reason){
++
++	if(exit_reason >= 0 && exit_reason <=7){
++		total_num_exits++;
++		exits_per_reason[(int)exit_reason]++;
++	}
++}*/
++
+diff --git a/arch/x86/kvm/vmx/vmx.c b/arch/x86/kvm/vmx/vmx.c
+index 63aaf44edd1f..2818c657ed90 100644
+--- a/arch/x86/kvm/vmx/vmx.c
++++ b/arch/x86/kvm/vmx/vmx.c
+@@ -30,6 +30,8 @@
+ 
+ #include <asm/apic.h>
+ #include <asm/asm.h>
++#include <asm/msr.h>
++#include <asm/atomic.h>
+ #include <asm/cpu.h>
+ #include <asm/debugreg.h>
+ #include <asm/desc.h>
+@@ -5837,12 +5839,29 @@ void dump_vmcs(void)
+  * The guest has exited.  See if we can fix it or if we need userspace
+  * assistance.
+  */
++
++
++	
++
++
+ static int vmx_handle_exit(struct kvm_vcpu *vcpu,
+ 	enum exit_fastpath_completion exit_fastpath)
+ {
++	extern atomic_t total_num_exits;
++	extern atomic_t exits_per_reason[69];
++	extern atomic64_t time_spent_per_exit[69];
++	extern atomic64_t total_time;
++	uint64_t start_time, end_time;
+ 	struct vcpu_vmx *vmx = to_vmx(vcpu);
+ 	u32 exit_reason = vmx->exit_reason;
+ 	u32 vectoring_info = vmx->idt_vectoring_info;
++	int ret;
++	uint64_t temp_diff;
++
++	start_time = rdtsc();
++
++	atomic_inc(&total_num_exits);
++	atomic_inc(&exits_per_reason[exit_reason]);
+ 
+ 	trace_kvm_exit(exit_reason, vcpu, KVM_ISA_VMX);
+ 
+@@ -5951,7 +5970,16 @@ static int vmx_handle_exit(struct kvm_vcpu *vcpu,
+ 	if (!kvm_vmx_exit_handlers[exit_reason])
+ 		goto unexpected_vmexit;
+ 
+-	return kvm_vmx_exit_handlers[exit_reason](vcpu);
++
++	ret = kvm_vmx_exit_handlers[exit_reason](vcpu);
++
++	end_time = rdtsc();
++
++	temp_diff = (end_time - start_time);
++	atomic64_add(temp_diff, &total_time);
++	atomic64_add(temp_diff, &time_spent_per_exit[exit_reason]);
++
++	return ret;
+ 
+ unexpected_vmexit:
+ 	vcpu_unimpl(vcpu, "vmx: unexpected exit reason 0x%x\n", exit_reason);
+@@ -5961,6 +5989,7 @@ static int vmx_handle_exit(struct kvm_vcpu *vcpu,
+ 			KVM_INTERNAL_ERROR_UNEXPECTED_EXIT_REASON;
+ 	vcpu->run->internal.ndata = 1;
+ 	vcpu->run->internal.data[0] = exit_reason;
++
+ 	return 0;
+ }
+ 
